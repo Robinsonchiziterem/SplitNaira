@@ -15,10 +15,10 @@ export function errorHandler(
   _next: NextFunction
 ) {
   const requestId = res.locals.requestId;
-  console.error({ requestId, err });
+  console.error({ requestId, err: err.stack || err.message || err });
   res.status(500).json({
     error: "internal_error",
-    message: "Unexpected server error.",
+    message: err.message || "Unexpected server error.",
     requestId
   });
 }

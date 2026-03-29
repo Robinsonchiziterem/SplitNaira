@@ -11,7 +11,11 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
-import { loadStellarConfig, RequestValidationError } from "../services/stellar.js";
+import { 
+  loadStellarConfig, 
+  getStellarRpcServer, 
+  RequestValidationError 
+} from "../services/stellar.js";
 
 export const splitsRouter = Router();
 
@@ -128,7 +132,7 @@ async function buildCreateProjectUnsignedXdr(
   input: z.infer<typeof createSplitSchema>
 ) {
   const config = loadStellarConfig();
-  const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+  const server = getStellarRpcServer();
 
   let sourceAccount;
   try {
@@ -617,27 +621,31 @@ splitsRouter.get("/:projectId/history", async (req: Request, res: Response, next
     }
 
     const config = loadStellarConfig();
-    const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
+    const server = getStellarRpcServer();
 
-    // 1. Fetch distribution_complete events
+    const topicProjectId = nativeToScVal(projectId, { type: "symbol" }).toXDR("base64");
+    const roundTopic = nativeToScVal("distribution_complete", { type: "symbol" }).toXDR("base64");
+    const paymentTopic = nativeToScVal("payment_sent", { type: "symbol" }).toXDR("base64");
+
     const roundEventResponse = await server.getEvents({
       cursor: "",
       filters: [
         {
           type: "contract",
-          contractIds: [config.contractId]
+          contractIds: [config.contractId],
+          topics: [[roundTopic], [topicProjectId]]
         }
       ],
       limit: 100
     });
 
-    // 2. Fetch payment_sent events
     const paymentEventResponse = await server.getEvents({
       cursor: "",
       filters: [
         {
           type: "contract",
-          contractIds: [config.contractId]
+          contractIds: [config.contractId],
+          topics: [[paymentTopic], [topicProjectId]]
         }
       ],
       limit: 100

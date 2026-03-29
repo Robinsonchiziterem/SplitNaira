@@ -12,7 +12,7 @@ import { requestIdMiddleware } from "./middleware/request-id.js";
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 
 app.disable("x-powered-by");
 
@@ -73,8 +73,10 @@ app.use("/splits", splitsRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-const port = Number(process.env.PORT ?? 3001);
+if (process.env.NODE_ENV !== "test") {
+  const port = Number(process.env.PORT ?? 3001);
+  app.listen(port, () => {
+    console.log(`SplitNaira API listening on :${port}`);
+  });
+}
 
-app.listen(port, () => {
-  console.log(`SplitNaira API listening on :${port}`);
-});
