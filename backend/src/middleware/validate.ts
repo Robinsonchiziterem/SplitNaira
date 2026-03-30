@@ -1,5 +1,6 @@
 import type { RequestHandler } from "express";
 import { z, type ZodTypeAny } from "zod";
+import { ApiError } from "./api-error.js";
 
 interface ValidationSchemas {
   body?: ZodTypeAny;
@@ -7,6 +8,12 @@ interface ValidationSchemas {
   query?: ZodTypeAny;
 }
 
+/**
+ * Builds structured validation details from a ZodError.
+ *
+ * Each issue is mapped to a flat object with path, message, and code
+ * so the frontend can display field-level errors.
+ */
 function buildValidationDetails(error: z.ZodError) {
   return error.issues.map((issue) => ({
     path: issue.path.join("."),
@@ -15,8 +22,20 @@ function buildValidationDetails(error: z.ZodError) {
   }));
 }
 
+/**
+ * Express middleware that validates request body, params, and/or query
+ * against the provided Zod schemas.
+ *
+ * On success the parsed (and potentially transformed) values are written
+ * back to `req.body` / `req.params` / `req.query` so downstream handlers
+ * receive clean, typed data.
+ *
+ * On failure an `ApiError` is thrown which the central error handler in
+ * `middleware/error.ts` serialises into the consistent
+ * `{ error, message, details, requestId }` response shape.
+ */
 export function validateRequest(schemas: ValidationSchemas): RequestHandler {
-  return (req, res, next) => {
+  return (req, _res, next) => {
     try {
       if (schemas.body) {
         req.body = schemas.body.parse(req.body);
@@ -30,13 +49,10 @@ export function validateRequest(schemas: ValidationSchemas): RequestHandler {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
-        const requestId = res.locals.requestId;
-        res.status(400).json({
-          error: "validation_error",
-          message: "Request validation failed.",
-          details: buildValidationDetails(error),
-          requestId
-        });
+        next(ApiError.validationError(
+          "Request validation failed.",
+          buildValidationDetails(error)
+        ));
         return;
       }
       next(error);

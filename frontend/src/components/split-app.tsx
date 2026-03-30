@@ -138,7 +138,7 @@ export function SplitApp() {
       const submitResponse = await server.sendTransaction(transaction);
 
       if (submitResponse.status === "ERROR") {
-        throw new Error(submitResponse.errorResultXdr ?? "Transaction submission failed.");
+        throw new Error(submitResponse.errorResult?.toString() ?? "Transaction submission failed.");
       }
 
       setTxHash(submitResponse.hash ?? null);

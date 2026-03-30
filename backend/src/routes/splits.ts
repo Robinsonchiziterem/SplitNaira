@@ -12,9 +12,15 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
-import { loadStellarConfig, RequestValidationError } from "../services/stellar.js";
+import { loadStellarConfig } from "../services/stellar.js";
+import { ApiError } from "../middleware/api-error.js";
+import { validateRequest } from "../middleware/validate.js";
 
 export const splitsRouter = Router();
+
+// ---------------------------------------------------------------------------
+// Validation schemas
+// ---------------------------------------------------------------------------
 
 const collaboratorSchema = z.object({
   address: z.string().min(1, "address is required"),
@@ -80,17 +86,21 @@ const updateCollaboratorsSchema = z.object({
   }
 });
 
-const projectIdParamSchema = z
-  .string()
-  .min(1, "projectId is required")
-  .max(32, "projectId must be at most 32 characters")
-  .regex(/^[a-zA-Z0-9_]+$/, "projectId must be alphanumeric/underscore");
+const projectIdParamSchema = z.object({
+  projectId: z
+    .string()
+    .min(1, "projectId is required")
+    .max(32, "projectId must be at most 32 characters")
+    .regex(/^[a-zA-Z0-9_]+$/, "projectId must be alphanumeric/underscore")
+});
 
 const lockProjectSchema = z.object({
   owner: z.string().min(1, "owner is required")
 });
 
-// --- Helpers ---
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function toCollaboratorScVal(collaborator: z.infer<typeof collaboratorSchema>) {
   return xdr.ScVal.scvMap([
@@ -107,6 +117,17 @@ function toCollaboratorScVal(collaborator: z.infer<typeof collaboratorSchema>) {
       val: xdr.ScVal.scvU32(collaborator.basisPoints)
     })
   ]);
+}
+
+/**
+ * Resolves a Stellar account or throws a structured ApiError.
+ */
+async function resolveAccount(server: rpc.Server, address: string) {
+  try {
+    return await server.getAccount(address);
+  } catch {
+    throw ApiError.validationError("owner account not found on selected network");
+  }
 }
 
 async function fetchProjectById(projectId: string) {
@@ -172,13 +193,7 @@ async function buildCreateProjectUnsignedXdr(
 ) {
   const config = loadStellarConfig();
   const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
-
-  let sourceAccount;
-  try {
-    sourceAccount = await server.getAccount(input.owner);
-  } catch {
-    throw new RequestValidationError("owner account not found on selected network");
-  }
+  const sourceAccount = await resolveAccount(server, input.owner);
 
   const ownerAddress = Address.fromString(input.owner);
   const tokenAddress = Address.fromString(input.token);
@@ -220,13 +235,7 @@ async function buildCreateProjectUnsignedXdr(
 async function buildUpdateCollaboratorsUnsignedXdr(input: { projectId: string } & z.infer<typeof updateCollaboratorsSchema>) {
   const config = loadStellarConfig();
   const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
-
-  let sourceAccount;
-  try {
-    sourceAccount = await server.getAccount(input.owner);
-  } catch {
-    throw new RequestValidationError("owner account not found on selected network");
-  }
+  const sourceAccount = await resolveAccount(server, input.owner);
 
   const ownerAddress = Address.fromString(input.owner);
   const collaboratorScVals = input.collaborators.map(toCollaboratorScVal);
@@ -264,13 +273,7 @@ async function buildUpdateCollaboratorsUnsignedXdr(input: { projectId: string } 
 async function buildLockProjectUnsignedXdr(input: { projectId: string } & z.infer<typeof lockProjectSchema>) {
   const config = loadStellarConfig();
   const server = new rpc.Server(config.sorobanRpcUrl, { allowHttp: true });
-
-  let sourceAccount;
-  try {
-    sourceAccount = await server.getAccount(input.owner);
-  } catch {
-    throw new RequestValidationError("owner account not found on selected network");
-  }
+  const sourceAccount = await resolveAccount(server, input.owner);
 
   const ownerAddress = Address.fromString(input.owner);
   const contract = new Contract(config.contractId);
@@ -302,7 +305,12 @@ async function buildLockProjectUnsignedXdr(input: { projectId: string } & z.infe
   };
 }
 
-// --- Routes ---
+// ---------------------------------------------------------------------------
+// Routes
+//
+// All errors are thrown (as ApiError or plain Error) and caught by the central
+// error handler in middleware/error.ts — no per-route catch blocks needed.
+// ---------------------------------------------------------------------------
 
 splitsRouter.get("/", async (_req, res, next) => {
   try {
@@ -313,139 +321,66 @@ splitsRouter.get("/", async (_req, res, next) => {
   }
 });
 
-splitsRouter.get("/:projectId", async (req, res, next) => {
-  try {
-    const requestId = res.locals.requestId;
-    const rawProjectId = req.params.projectId;
-    const projectId = typeof rawProjectId === "string" ? rawProjectId.trim() : undefined;
-    if (!projectId) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "projectId is required",
-        requestId
-      });
-    }
-
-    const project = await fetchProjectById(projectId);
-    if (!project) {
-      return res.status(404).json({
-        error: "not_found",
-        message: `Split project ${projectId} not found.`,
-        requestId
-      });
-    }
-
-    return res.status(200).json(project);
-  } catch (error) {
-    return next(error);
-  }
-});
-
-splitsRouter.put("/:projectId", async (req, res, next) => {
-  try {
-    const requestId = res.locals.requestId;
-    const parsedParams = projectIdParamSchema.safeParse(req.params.projectId);
-    const parsedBody = updateCollaboratorsSchema.safeParse(req.body);
-
-    if (!parsedParams.success || !parsedBody.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: {
-          params: parsedParams.success ? null : parsedParams.error.flatten(),
-          body: parsedBody.success ? null : parsedBody.error.flatten()
-        },
-        requestId
-      });
-    }
-
+splitsRouter.get(
+  "/:projectId",
+  validateRequest({ params: projectIdParamSchema }),
+  async (req, res, next) => {
     try {
+      const projectId = req.params.projectId as string;
+      const project = await fetchProjectById(projectId);
+      if (!project) {
+        throw ApiError.notFound(`Split project '${projectId}' not found.`);
+      }
+      return res.status(200).json(project);
+    } catch (error) {
+      return next(error);
+    }
+  }
+);
+
+splitsRouter.put(
+  "/:projectId",
+  validateRequest({ params: projectIdParamSchema, body: updateCollaboratorsSchema }),
+  async (req, res, next) => {
+    try {
+      const projectId = req.params.projectId as string;
       const result = await buildUpdateCollaboratorsUnsignedXdr({
-        projectId: parsedParams.data,
-        ...parsedBody.data
+        projectId,
+        ...req.body
       });
       return res.status(200).json(result);
     } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
+      return next(error);
     }
-  } catch (error) {
-    return next(error);
   }
-});
+);
 
-splitsRouter.post("/:projectId/lock", async (req, res, next) => {
-  try {
-    const requestId = res.locals.requestId;
-    const parsedParams = projectIdParamSchema.safeParse(req.params.projectId);
-    const parsedBody = lockProjectSchema.safeParse(req.body);
-
-    if (!parsedParams.success || !parsedBody.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: {
-          params: parsedParams.success ? null : parsedParams.error.flatten(),
-          body: parsedBody.success ? null : parsedBody.error.flatten()
-        },
-        requestId
-      });
-    }
-
+splitsRouter.post(
+  "/:projectId/lock",
+  validateRequest({ params: projectIdParamSchema, body: lockProjectSchema }),
+  async (req, res, next) => {
     try {
+      const projectId = req.params.projectId as string;
       const result = await buildLockProjectUnsignedXdr({
-        projectId: parsedParams.data,
-        owner: parsedBody.data.owner
+        projectId,
+        owner: req.body.owner
       });
       return res.status(200).json(result);
     } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
+      return next(error);
     }
-  } catch (error) {
-    return next(error);
   }
-});
+);
 
-splitsRouter.post("/", async (req, res, next) => {
-  try {
-    const requestId = res.locals.requestId;
-    const parsed = createSplitSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: "validation_error",
-        message: "Invalid request payload.",
-        details: parsed.error.flatten(),
-        requestId
-      });
-    }
-
+splitsRouter.post(
+  "/",
+  validateRequest({ body: createSplitSchema }),
+  async (req, res, next) => {
     try {
-      const result = await buildCreateProjectUnsignedXdr(parsed.data);
+      const result = await buildCreateProjectUnsignedXdr(req.body);
       return res.status(200).json(result);
     } catch (error) {
-      if (error instanceof RequestValidationError) {
-        return res.status(400).json({
-          error: "validation_error",
-          message: error.message,
-          requestId
-        });
-      }
-      throw error;
+      return next(error);
     }
-  } catch (error) {
-    return next(error);
   }
-});
+);
