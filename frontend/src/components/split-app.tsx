@@ -22,6 +22,7 @@ import {
 } from "@/lib/freighter";
 import { type SplitProject } from "@/lib/stellar";
 import { useToast } from "./toast-provider";
+import { TokenSelector } from "./TypeSelector";
 
 interface CollaboratorInput {
   id: string;
@@ -696,38 +697,12 @@ export function SplitApp() {
                   className="glass-input w-full rounded-2xl px-5 py-4 text-sm"
                 />
               </div>
-              <div className="space-y-2">
-                <label
-                  htmlFor="token"
-                  className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted px-1"
-                >
-                  Asset Token (Stellar ID)
-                </label>
-                <div className="space-y-2">
-                  <input
-                    id="token"
-                    required
-                    value={token}
-                    onChange={(event) => setToken(event.target.value)}
-                    placeholder="G... or C..."
-                    className={clsx(
-                      "glass-input w-full rounded-2xl px-5 py-4 text-sm",
-                      token &&
-                        !StrKey.isValidEd25519PublicKey(token) &&
-                        !StrKey.isValidContract(token)
-                        ? "border-red-500/50 bg-red-500/5"
-                        : "",
-                    )}
-                  />
-                  {token &&
-                    !StrKey.isValidEd25519PublicKey(token) &&
-                    !StrKey.isValidContract(token) && (
-                      <p className="px-1 text-[10px] font-bold text-red-400 uppercase tracking-tighter">
-                        Invalid Stellar address format
-                      </p>
-                    )}
-                </div>
-              </div>
+              <TokenSelector
+                value={token}
+                onChange={setToken}
+                network={wallet.network}
+                required
+              />
               <div className="space-y-2">
                 <label
                   htmlFor="projectType"
